@@ -114,7 +114,7 @@ export default function ConnectionPrompt({
           {title}
         </h2>
         {subtitle && (
-          <p className="mt-2 text-sm leading-relaxed text-fog-muted">
+          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-fog-muted">
             {subtitle}
           </p>
         )}

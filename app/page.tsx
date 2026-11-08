@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import EntryGate from "./components/EntryGate";
+import EntryGate, { AskField, IntentChips } from "./components/EntryGate";
 import WorldMap from "./components/WorldMap";
 import ConnectionPrompt from "./components/ConnectionPrompt";
 import ChatPanel, { type ChatMessage } from "./components/ChatPanel";
 import VideoPanel from "./components/VideoPanel";
-import { join, leave, poll, sendSignal } from "@/lib/api";
+import { join, leave, poll, sendSignal, setIntent } from "@/lib/api";
 import { PeerSession, type DescType, type PeerControl } from "@/lib/webrtc";
 import { POLL_INTERVAL_MS } from "@/lib/presence";
-import { applyPrivacyOffset } from "@/lib/geo";
+import { applyPrivacyOffset, distanceKm, formatDistance } from "@/lib/geo";
+import { clipAsk, intentBadgeText, publicAsk, type IntentId } from "@/lib/intent";
 import { type PeerDot, type SignalMsg, type SignalType } from "@/lib/types";
 
 type Conn =
@@ -30,6 +31,7 @@ export default function Home() {
     secret: string;
   } | null>(null);
   const credsRef = useRef<{ publicId: string; secret: string } | null>(null);
+  const presenceSaveGen = useRef(0);
   const [peers, setPeers] = useState<PeerDot[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -38,6 +40,10 @@ export default function Home() {
   const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(
     null,
   );
+  const [myIntent, setMyIntent] = useState<IntentId | null>(null);
+  const [myAsk, setMyAsk] = useState("");
+  const [previewPeerId, setPreviewPeerId] = useState<string | null>(null);
+  const [intentOpen, setIntentOpen] = useState(false);
 
   const [conn, _setConn] = useState<Conn>({ kind: "idle" });
   const connRef = useRef<Conn>(conn);
@@ -84,6 +90,7 @@ export default function Home() {
     setRemoteStream(null);
     setVideo("none");
     setMessages([]);
+    setPreviewPeerId(null);
     setConn({ kind: "idle" });
     if (message) showNotice(message);
   }
@@ -153,8 +160,14 @@ export default function Home() {
     }
   }
 
+  function openPreview(peerId: string) {
+    if (connRef.current.kind !== "idle") return;
+    setPreviewPeerId(peerId);
+  }
+
   function requestConnection(peerId: string) {
     if (connRef.current.kind !== "idle") return;
+    setPreviewPeerId(null);
     setConn({ kind: "requesting", peerId });
     signal(peerId, "request");
     requestTimer.current = setTimeout(() => {
@@ -242,6 +255,7 @@ export default function Home() {
   function processSignal(sig: SignalMsg) {
     switch (sig.type) {
       case "request": {
+        setPreviewPeerId(null);
         if (connRef.current.kind === "idle") {
           setConn({ kind: "incoming", peerId: sig.fromId });
         } else {
@@ -335,13 +349,61 @@ export default function Home() {
     };
   }, [session, phase]);
 
-  async function handleReady(lat: number, lng: number) {
+  async function handleReady(
+    lat: number,
+    lng: number,
+    intent: IntentId | null,
+    ask: string | null,
+  ) {
     const offset = applyPrivacyOffset(lat, lng);
     setMyLocation(offset);
-    const creds = await join(offset.lat, offset.lng);
+    setMyIntent(intent);
+    setMyAsk(ask ?? "");
+    const creds = await join(offset.lat, offset.lng, intent, ask);
     credsRef.current = creds;
     setSession(creds);
     setPhase("live");
+  }
+
+  async function savePresence(nextIntent: IntentId | null, nextAsk: string) {
+    const secret = credsRef.current?.secret;
+    if (!secret) return;
+    const ask = nextAsk.trim() ? clipAsk(nextAsk.trim()) : null;
+    const prevIntent = myIntent;
+    const prevAsk = myAsk;
+    const gen = ++presenceSaveGen.current;
+    setMyIntent(nextIntent);
+    setMyAsk(ask ?? "");
+    try {
+      await setIntent(secret, nextIntent, ask);
+    } catch {
+      if (gen !== presenceSaveGen.current) return;
+      setMyIntent(prevIntent);
+      setMyAsk(prevAsk);
+      showNotice("Couldn't update that. Try again.");
+    }
+  }
+
+  const previewPeer = previewPeerId
+    ? peers.find((p) => p.id === previewPeerId)
+    : undefined;
+
+  function previewSubtitle(peer: PeerDot | undefined): string {
+    const lines: string[] = [];
+    const badge = intentBadgeText(peer?.intent);
+    if (badge) lines.push(badge);
+    const ask = publicAsk(peer?.ask);
+    if (ask) lines.push(`“${ask}”`);
+    if (peer && myLocation) {
+      const dist = formatDistance(
+        distanceKm(myLocation, { lat: peer.lat, lng: peer.lng }),
+      );
+      if (dist) lines.push(`📍 ${dist} away`);
+    }
+    lines.push(
+      "Connect for a private, peer-to-peer chat. They won’t see your exact location.",
+    );
+    return lines.join("\n");
   }
 
   const inChat = conn.kind === "connecting" || conn.kind === "connected";
@@ -355,14 +417,63 @@ export default function Home() {
       <WorldMap
         peers={peers}
         me={myLocation}
-        onPeerClick={requestConnection}
+        meIntent={myIntent}
+        meAsk={myAsk || null}
+        onPeerClick={openPreview}
         canConnect={conn.kind === "idle"}
       />
+
+      <div className="absolute right-3 top-3 z-20 sm:right-5 sm:top-5">
+        <button
+          type="button"
+          aria-expanded={intentOpen}
+          aria-label="Change why you are here"
+          onClick={() => setIntentOpen((open) => !open)}
+          className="rounded-full border border-line bg-night-elevated/90 px-3 py-1.5 text-xs font-medium text-fog shadow-lg backdrop-blur-md transition hover:border-accent/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          {intentBadgeText(myIntent) ?? "Why are you here?"}
+        </button>
+        {intentOpen && (
+          <div className="absolute right-0 mt-2 w-[min(calc(100vw-1.5rem),20rem)] rounded-2xl border border-line bg-night-elevated/95 p-3 shadow-xl backdrop-blur-md">
+            <p className="px-1 text-xs text-fog-muted">
+              Optional. Tap again to clear.
+            </p>
+            <IntentChips
+              value={myIntent}
+              onChange={(next) => {
+                void savePresence(next, myAsk);
+              }}
+            />
+            <AskField
+              value={myAsk}
+              onChange={setMyAsk}
+              onCommit={(next) => {
+                void savePresence(myIntent, next);
+              }}
+            />
+          </div>
+        )}
+      </div>
 
       {notice && (
         <div className="ui-enter pointer-events-none absolute left-1/2 top-4 z-30 w-[min(calc(100%-2rem),24rem)] -translate-x-1/2 rounded-full border border-line bg-night-elevated/92 px-4 py-2 text-center text-sm text-fog shadow-lg backdrop-blur-md sm:top-5">
           {notice}
         </div>
+      )}
+
+      {previewPeerId && conn.kind === "idle" && (
+        <ConnectionPrompt
+          title="Connect?"
+          subtitle={previewSubtitle(previewPeer)}
+          acceptLabel="Connect"
+          declineLabel="Not now"
+          onAccept={() => {
+            const id = previewPeerId;
+            setPreviewPeerId(null);
+            if (id) requestConnection(id);
+          }}
+          onDecline={() => setPreviewPeerId(null)}
+        />
       )}
 
       {conn.kind === "requesting" && (

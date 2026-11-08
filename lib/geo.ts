@@ -33,6 +33,35 @@ function wrapLng(lng: number): number {
   return ((((lng + 180) % 360) + 360) % 360) - 180;
 }
 
+/** Great-circle distance in km between two WGS84 points. */
+export function distanceKm(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+export function formatDistance(km: number): string {
+  if (!Number.isFinite(km) || km < 0) return "";
+  if (km < 1) {
+    const meters = Math.max(10, Math.round((km * 1000) / 10) * 10);
+    return `${meters} m`;
+  }
+  if (km < 10) {
+    const tenths = Math.round(km * 10) / 10;
+    return tenths % 1 === 0 ? `${tenths.toFixed(0)} km` : `${tenths.toFixed(1)} km`;
+  }
+  return `${Math.round(km)} km`;
+}
+
 export function isValidLatLng(lat: unknown, lng: unknown): boolean {
   return (
     typeof lat === "number" &&

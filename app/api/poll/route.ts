@@ -4,6 +4,7 @@ import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
 import type { PollResponse } from "@/lib/types";
 import { presenceFromSecret, secretFromRequest } from "@/lib/session";
 import { clientIp, rateLimit, tooManyRequests } from "@/lib/rateLimit";
+import { isIntentId, publicAsk } from "@/lib/intent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,7 +41,7 @@ export async function GET(request: NextRequest) {
       id: { not: me.id },
       lastSeen: { gte: staleCutoff },
     },
-    select: { id: true, lat: true, lng: true, busy: true },
+    select: { id: true, lat: true, lng: true, busy: true, intent: true, ask: true },
   });
 
   const inbox = await prisma.signal.findMany({
@@ -59,6 +60,8 @@ export async function GET(request: NextRequest) {
       lat: p.lat,
       lng: p.lng,
       busy: p.busy,
+      intent: isIntentId(p.intent) ? p.intent : null,
+      ask: publicAsk(p.ask),
     })),
     signals: inbox.map((s) => ({
       id: s.id,

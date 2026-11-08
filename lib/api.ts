@@ -1,16 +1,35 @@
 import type { PollResponse, SignalType } from "@/lib/types";
+import type { IntentId } from "@/lib/intent";
 
 export async function join(
   lat: number,
   lng: number,
+  intent?: IntentId | null,
+  ask?: string | null,
 ): Promise<{ publicId: string; secret: string }> {
   const res = await fetch("/api/join", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lat, lng }),
+    body: JSON.stringify({ lat, lng, intent: intent ?? null, ask: ask ?? null }),
   });
   if (!res.ok) throw new Error(`join failed: ${res.status}`);
   return res.json() as Promise<{ publicId: string; secret: string }>;
+}
+
+export async function setIntent(
+  secret: string,
+  intent: IntentId | null,
+  ask: string | null,
+): Promise<void> {
+  const res = await fetch("/api/intent", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${secret}`,
+    },
+    body: JSON.stringify({ intent, ask }),
+  });
+  if (!res.ok) throw new Error(`intent failed: ${res.status}`);
 }
 
 export async function poll(secret: string): Promise<PollResponse> {

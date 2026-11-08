@@ -18,6 +18,8 @@ model Presence {
   lng         Float
   busy        Boolean  @default(false) // true while in an active connection
   pendingWith String? // other public id during request or connection
+  intent      String? // optional allowlisted purpose for this session only
+  ask         String? // optional short ask, capped so map badges stay one line
   lastSeen    DateTime
 
   @@index([lastSeen])

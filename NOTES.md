@@ -75,3 +75,35 @@ I fixed an issue where the browser's camera or microphone indicator remained act
 - Join no longer upserts over another session. GPS is offset on the client before join.
 - Request/accept/end only change `busy` for a paired pair. Ids are validated the same way on every route.
 - Basic per-IP rate limits and a 70 KB body cap.
+
+## Phase 4
+
+### What I built
+
+- **Pulse Intent:** Users can choose why they are on Pulse through six categories: Help (`help`), Company (`company`), Trade (`trade`), Food (`food`), Ride (`ride`), and Chat / Meet (`meet`). This helps others understand what they need or what they can offer.
+- Users can also add a short 24-character message describing what they need or are looking for. For example: "Need a vet?"
+- Their intention and short message appear in a compact card below their map marker, together with their approximate area and distance.
+- Users can tap another person's marker to preview their intention before deciding to connect. A connection request is sent only when they click Connect.
+- Users can change or clear their intention without leaving Pulse.
+
+### Why I built it
+
+My vision for Pulse is to create an all-in-one platform where people can connect, find what they need, and discover what others can offer.
+
+Instead of using different apps for different everyday needs, Pulse aims to bring these connections together in one place.
+
+People could use Pulse to:
+
+- Find help or assistance when they need it.
+- Offer or find services.
+- Find people to talk to or spend time with.
+- Buy, sell, or exchange products.
+- Discover food, recommendations, or food-related offers.
+- Find available rides or offer transportation.
+
+The idea is to make it easier to connect people who need something with people who can provide it. By showing why someone is on Pulse, people can better understand what others are looking for and start more meaningful conversations.
+
+### What I would improve next
+
+- Expand Pulse to support different needs, services, and offers in one platform.
+- Develop more ways to help people connect and communicate around their needs.

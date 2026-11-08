@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import "mapbox-gl/dist/mapbox-gl.css";
 import type { Map as MapboxMap, Marker } from "mapbox-gl";
 import type { PeerDot } from "@/lib/types";
+import { intentBadgeText, isIntentId, publicAsk } from "@/lib/intent";
+import { distanceKm, formatDistance } from "@/lib/geo";
+import { peekPlaceName, placeName } from "@/lib/place";
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "pk.eyJ1IjoicHVsc2UtbWFwIiwiYSI6ImNrMDBkZW1vMDAwMDAwMDAifQ.AAAAAAAAAAAAAAAAAAAAAA";
 
@@ -133,14 +136,84 @@ function attachViewButtons(map: MapboxMap, getMe: () => { lat: number; lng: numb
   );
 }
 
+const PIN_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s7-5.4 7-11a7 7 0 1 0-14 0c0 5.6 7 11 7 11z"/><circle cx="12" cy="10" r="2.4"/></svg>`;
+
+function syncBadge(
+  host: HTMLElement,
+  opts: {
+    intent: string | null;
+    ask: string | null;
+    distance: string | null;
+    place: string | null;
+    isMe: boolean;
+  },
+) {
+  let badge = host.querySelector<HTMLElement>(".pulse-badge");
+  const title = isIntentId(opts.intent) ? intentBadgeText(opts.intent) : null;
+  const ask = publicAsk(opts.ask);
+  const meta = opts.isMe
+    ? ["You", opts.place].filter(Boolean).join(" · ")
+    : [opts.place, opts.distance ? `${opts.distance} away` : null]
+        .filter(Boolean)
+        .join(" · ");
+  if (!title && !ask && !meta) {
+    badge?.remove();
+    return;
+  }
+  const sig = `${title ?? ""}\0${ask ?? ""}\0${meta}\0${opts.isMe ? "1" : "0"}`;
+  if (!badge) {
+    badge = document.createElement("div");
+    badge.className = "pulse-badge";
+    host.append(badge);
+  } else if (badge.dataset.sig === sig) {
+    return;
+  }
+  badge.dataset.sig = sig;
+  badge.replaceChildren();
+  if (title) {
+    const heading = document.createElement("span");
+    heading.className = "pulse-badge-title";
+    heading.textContent = title;
+    badge.append(heading);
+  }
+  if (ask) {
+    const note = document.createElement("span");
+    note.className = "pulse-badge-ask";
+    note.textContent = ask;
+    badge.append(note);
+  }
+  if (meta) {
+    const row = document.createElement("span");
+    row.className = "pulse-badge-meta";
+    if (!opts.isMe) row.insertAdjacentHTML("beforeend", PIN_SVG);
+    const text = document.createElement("span");
+    text.textContent = meta;
+    row.append(text);
+    badge.append(row);
+  }
+}
+
+function peerSignature(peers: PeerDot[]): string {
+  return peers
+    .map(
+      (peer) =>
+        `${peer.id}|${peer.lat}|${peer.lng}|${Number(peer.busy)}|${peer.intent ?? ""}|${peer.ask ?? ""}`,
+    )
+    .join(";");
+}
+
 export default function WorldMap({
   peers,
   me,
+  meIntent,
+  meAsk,
   onPeerClick,
   canConnect,
 }: {
   peers: PeerDot[];
   me: { lat: number; lng: number } | null;
+  meIntent: string | null;
+  meAsk: string | null;
   onPeerClick: (id: string) => void;
   canConnect: boolean;
 }) {
@@ -148,7 +221,9 @@ export default function WorldMap({
   const mapRef = useRef<MapboxMap | null>(null);
   const markersRef = useRef<Map<string, Marker>>(new Map());
   const meMarkerRef = useRef<Marker | null>(null);
+  const peersRef = useRef(peers);
   const [ready, setReady] = useState(false);
+  const peerSig = peerSignature(peers);
 
   // Marker click handlers are bound once, so read the live click handler +
   // connectability through refs (synced in an effect, never during render).
@@ -159,6 +234,7 @@ export default function WorldMap({
     onPeerClickRef.current = onPeerClick;
     canConnectRef.current = canConnect;
     meRef.current = me;
+    peersRef.current = peers;
   });
 
   // Initialise the map once.
@@ -212,32 +288,60 @@ export default function WorldMap({
     if (!map || !ready || !me) return;
     let cancelled = false;
 
+    const paintMe = (place: string | null) => {
+      const marker = meMarkerRef.current;
+      if (!marker) return;
+      syncBadge(marker.getElement(), {
+        intent: meIntent,
+        ask: meAsk,
+        distance: null,
+        place,
+        isMe: true,
+      });
+    };
+
+    const refreshBadge = () => {
+      const knownPlace = peekPlaceName(me.lat, me.lng);
+      paintMe(knownPlace ?? null);
+      if (TOKEN && knownPlace === undefined) {
+        void placeName(me.lat, me.lng, TOKEN).then((place) => {
+          if (cancelled) return;
+          paintMe(place);
+        });
+      }
+    };
+
+    if (meMarkerRef.current) {
+      meMarkerRef.current.setLngLat([me.lng, me.lat]);
+      refreshBadge();
+      return () => {
+        cancelled = true;
+      };
+    }
+
     (async () => {
       const mapboxgl = (await import("mapbox-gl")).default;
-      if (cancelled) return;
-      if (!meMarkerRef.current) {
-        const el = document.createElement("div");
-        el.className = "pulse-me";
-        el.title = "You are here";
-        const core = document.createElement("span");
-        core.className = "pulse-me-core";
-        core.setAttribute("aria-hidden", "true");
-        const label = document.createElement("span");
-        label.className = "pulse-me-label";
-        label.textContent = "You";
-        el.append(core, label);
-        meMarkerRef.current = new mapboxgl.Marker({ element: el, anchor: "center" })
-          .setLngLat([me.lng, me.lat])
-          .addTo(map);
-      } else {
-        meMarkerRef.current.setLngLat([me.lng, me.lat]);
+      if (cancelled || meMarkerRef.current) {
+        refreshBadge();
+        return;
       }
+      const el = document.createElement("div");
+      el.className = "pulse-me";
+      el.title = "You are here";
+      const core = document.createElement("span");
+      core.className = "pulse-me-core";
+      core.setAttribute("aria-hidden", "true");
+      el.append(core);
+      meMarkerRef.current = new mapboxgl.Marker({ element: el, anchor: "center" })
+        .setLngLat([me.lng, me.lat])
+        .addTo(map);
+      refreshBadge();
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [me, ready]);
+  }, [me, meIntent, meAsk, ready]);
 
   // Reconcile markers whenever the peer list changes (or the map becomes ready).
   useEffect(() => {
@@ -246,15 +350,17 @@ export default function WorldMap({
     let cancelled = false;
 
     (async () => {
-      const mapboxgl = (await import("mapbox-gl")).default;
-      if (cancelled) return;
       const markers = markersRef.current;
+      const peers = peersRef.current;
       const seen = new Set<string>();
+      let mapboxgl: (typeof import("mapbox-gl"))["default"] | null = null;
 
       for (const peer of peers) {
         seen.add(peer.id);
         let marker = markers.get(peer.id);
         if (!marker) {
+          mapboxgl = mapboxgl ?? (await import("mapbox-gl")).default;
+          if (cancelled) return;
           const el = document.createElement("button");
           el.className = "pulse-dot";
           el.style.setProperty("--dot-color", dotColor(peer.id));
@@ -270,13 +376,57 @@ export default function WorldMap({
             .setLngLat([peer.lng, peer.lat])
             .addTo(map);
           markers.set(peer.id, marker);
+        } else {
+          marker.setLngLat([peer.lng, peer.lat]);
         }
         const el = marker.getElement();
         el.classList.toggle("pulse-dot-busy", peer.busy);
+        const here = meRef.current;
+        const dist =
+          here && Number.isFinite(peer.lat) && Number.isFinite(peer.lng)
+            ? formatDistance(distanceKm(here, { lat: peer.lat, lng: peer.lng }))
+            : "";
+        const knownPlace =
+          Number.isFinite(peer.lat) && Number.isFinite(peer.lng)
+            ? peekPlaceName(peer.lat, peer.lng)
+            : null;
+        const paintBadge = (place: string | null) => {
+          const live = markers.get(peer.id);
+          if (!live) return;
+          syncBadge(live.getElement(), {
+            intent: peer.intent,
+            ask: peer.ask,
+            distance: dist || null,
+            place,
+            isMe: false,
+          });
+        };
+        paintBadge(knownPlace ?? null);
+        if (
+          TOKEN &&
+          knownPlace === undefined &&
+          Number.isFinite(peer.lat) &&
+          Number.isFinite(peer.lng)
+        ) {
+          void placeName(peer.lat, peer.lng, TOKEN).then((place) => {
+            if (cancelled) return;
+            paintBadge(place);
+          });
+        }
+        const intent = isIntentId(peer.intent)
+          ? intentBadgeText(peer.intent)
+          : null;
         const tip = peer.busy
           ? "In a conversation"
           : canConnectRef.current
-            ? "Stranger · Tap to connect"
+            ? [
+                intent,
+                publicAsk(peer.ask),
+                dist ? `${dist} away` : null,
+                "Tap to preview",
+              ]
+                .filter(Boolean)
+                .join(" · ")
             : "You're already in a conversation";
         el.setAttribute("data-tip", tip);
         el.setAttribute("aria-label", tip);
@@ -296,7 +446,7 @@ export default function WorldMap({
     return () => {
       cancelled = true;
     };
-  }, [peers, ready]);
+  }, [peerSig, ready]);
 
   return (
     <div className="absolute inset-0">
