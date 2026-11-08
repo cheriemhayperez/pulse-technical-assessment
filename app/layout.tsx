@@ -14,7 +14,12 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Pulse",
-  description: "A living globe of anonymous strangers. Tap a dot, start talking.",
+  description:
+    "A living globe of anonymous strangers. Appear as a dot, tap someone, talk — then disappear.",
+};
+
+export const viewport = {
+  viewportFit: "cover" as const,
 };
 
 export default function RootLayout({
@@ -27,7 +32,9 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="flex min-h-full flex-col bg-night font-sans text-fog antialiased">
+        {children}
+      </body>
     </html>
   );
 }

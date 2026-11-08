@@ -107,10 +107,16 @@ export default function Home() {
         if (videoRef.current === "requesting" && ps) {
           ps.startVideo()
             .then((stream) => {
+              if (peerRef.current !== ps || videoRef.current !== "requesting") {
+                for (const track of stream.getTracks()) track.stop();
+                return;
+              }
               setLocalStream(stream);
               setVideo("active");
             })
-            .catch(() => {
+            .catch((err: unknown) => {
+              // Intentional cancel: do not send video-end or show an error.
+              if (err instanceof Error && err.name === "VideoCancelled") return;
               setVideo("none");
               ps.sendControl("video-end");
               showNotice("Camera unavailable.");
@@ -187,11 +193,17 @@ export default function Home() {
     if (!ps) return;
     ps.startVideo()
       .then((stream) => {
+        if (peerRef.current !== ps || videoRef.current !== "incoming") {
+          for (const track of stream.getTracks()) track.stop();
+          return;
+        }
         setLocalStream(stream);
         ps.sendControl("video-accept");
         setVideo("active");
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        // Intentional cancel: do not send video-decline or show an error.
+        if (err instanceof Error && err.name === "VideoCancelled") return;
         ps.sendControl("video-decline");
         setVideo("none");
         showNotice("Camera unavailable.");
@@ -313,11 +325,11 @@ export default function Home() {
     setPhase("live");
   }
 
+  const inChat = conn.kind === "connecting" || conn.kind === "connected";
+
   if (phase === "gate") {
     return <EntryGate onReady={handleReady} />;
   }
-
-  const inChat = conn.kind === "connecting" || conn.kind === "connected";
 
   return (
     <main className="fixed inset-0 overflow-hidden">
@@ -329,28 +341,25 @@ export default function Home() {
       />
 
       {notice && (
-        <div className="absolute left-1/2 top-20 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
+        <div className="ui-enter pointer-events-none absolute left-1/2 top-4 z-30 w-[min(calc(100%-2rem),24rem)] -translate-x-1/2 rounded-full border border-line bg-night-elevated/92 px-4 py-2 text-center text-sm text-fog shadow-lg backdrop-blur-md sm:top-5">
           {notice}
         </div>
       )}
 
       {conn.kind === "requesting" && (
-        <div className="absolute left-1/2 top-20 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
-          <span>Requesting connection…</span>
-          <button
-            onClick={cancelRequest}
-            className="rounded-full bg-zinc-700 px-3 py-1 text-xs hover:bg-zinc-600"
-          >
-            Cancel
-          </button>
-        </div>
+        <RequestingBanner
+          onCancel={cancelRequest}
+          timeoutMs={REQUEST_TIMEOUT_MS}
+        />
       )}
 
       {conn.kind === "incoming" && (
         <ConnectionPrompt
           title="A stranger wants to connect"
+          subtitle="Accept to open a private, peer-to-peer chat. They won’t see your exact location."
           acceptLabel="Accept"
-          declineLabel="Decline"
+          declineLabel="Not now"
+          timeoutMs={REQUEST_TIMEOUT_MS}
           onAccept={acceptIncoming}
           onDecline={declineIncoming}
         />
@@ -361,6 +370,7 @@ export default function Home() {
           messages={messages}
           connected={conn.kind === "connected"}
           videoBusy={video !== "none"}
+          inert={video === "active"}
           onSend={(text) => {
             peerRef.current?.sendChat(text);
             addMessage(true, text);
@@ -371,17 +381,17 @@ export default function Home() {
       )}
 
       {video === "requesting" && (
-        <div className="absolute bottom-24 left-1/2 z-30 -translate-x-1/2 rounded-full bg-zinc-800/90 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur">
+        <div className="ui-enter absolute left-1/2 z-30 w-[min(calc(100%-2rem),24rem)] -translate-x-1/2 rounded-full border border-line bg-night-elevated/92 px-4 py-2 text-center text-sm text-fog shadow-lg backdrop-blur-md bottom-[calc(68vh+1.25rem+env(safe-area-inset-bottom,0px))] sm:bottom-8 sm:w-auto">
           Waiting for stranger to accept video…
         </div>
       )}
 
       {video === "incoming" && (
         <ConnectionPrompt
-          title="Start video call?"
-          subtitle="The stranger wants to turn on video."
-          acceptLabel="Accept"
-          declineLabel="Decline"
+          title="Start video?"
+          subtitle="They’d like to turn on camera and microphone. You can return to chat anytime."
+          acceptLabel="Start video"
+          declineLabel="Stay in chat"
           onAccept={acceptVideo}
           onDecline={declineVideo}
         />
@@ -395,5 +405,40 @@ export default function Home() {
         />
       )}
     </main>
+  );
+}
+
+function RequestingBanner({
+  onCancel,
+  timeoutMs,
+}: {
+  onCancel: () => void;
+  timeoutMs: number;
+}) {
+  const [seconds, setSeconds] = useState(() => Math.ceil(timeoutMs / 1000));
+
+  useEffect(() => {
+    const started = Date.now();
+    const id = window.setInterval(() => {
+      setSeconds(Math.max(0, Math.ceil((timeoutMs - (Date.now() - started)) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [timeoutMs]);
+
+  return (
+    <div className="ui-enter absolute left-1/2 top-[4.75rem] z-30 flex -translate-x-1/2 items-center gap-3 rounded-full border border-line bg-night-elevated/92 px-4 py-2 text-sm text-fog shadow-lg backdrop-blur-md">
+      <span className="size-1.5 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
+      <span>
+        Waiting for them…{" "}
+        <span className="tabular-nums text-fog-muted">{seconds}s</span>
+      </span>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="rounded-full px-2.5 py-1 text-xs text-fog-muted transition hover:text-fog focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        Cancel
+      </button>
+    </div>
   );
 }

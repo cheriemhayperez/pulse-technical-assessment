@@ -30,6 +30,8 @@ export class PeerSession {
   private ignoreOffer = false;
   private localStream: MediaStream | null = null;
   private closed = false;
+  // Invalidates an in-flight getUserMedia when video is stopped or the session closes.
+  private videoGeneration = 0;
   private readonly cb: PeerCallbacks;
   private pendingCandidates: RTCIceCandidateInit[] = [];
 
@@ -162,29 +164,42 @@ export class PeerSession {
   }
 
   async startVideo(): Promise<MediaStream> {
-    if (!this.localStream) {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-      for (const track of this.localStream.getTracks()) {
-        this.pc.addTrack(track, this.localStream);
-      }
+    if (this.closed) {
+      throw Object.assign(new Error("video cancelled"), { name: "VideoCancelled" });
     }
-    return this.localStream;
+    if (this.localStream) return this.localStream;
+    const generation = this.videoGeneration;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+    if (this.closed || generation !== this.videoGeneration) {
+      for (const track of stream.getTracks()) track.stop();
+      throw Object.assign(new Error("video cancelled"), { name: "VideoCancelled" });
+    }
+    this.localStream = stream;
+    for (const track of stream.getTracks()) {
+      this.pc.addTrack(track, stream);
+    }
+    return stream;
   }
 
   stopVideo() {
+    this.videoGeneration += 1;
     if (this.localStream) {
       for (const track of this.localStream.getTracks()) track.stop();
-      for (const sender of this.pc.getSenders()) {
-        if (sender.track) {
-          try {
-            this.pc.removeTrack(sender);
-          } catch {}
-        }
-      }
       this.localStream = null;
+    }
+    // A sender may still hold a live track even when localStream is null.
+    for (const sender of this.pc.getSenders()) {
+      if (sender.track) {
+        try {
+          sender.track.stop();
+        } catch {}
+        try {
+          this.pc.removeTrack(sender);
+        } catch {}
+      }
     }
   }
 

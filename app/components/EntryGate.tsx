@@ -5,10 +5,14 @@ import { useState } from "react";
 export default function EntryGate({
   onReady,
 }: {
-  onReady: (lat: number, lng: number) => void;
+  onReady: (lat: number, lng: number) => Promise<void>;
 }) {
-  const [status, setStatus] = useState<"idle" | "locating" | "error">("idle");
+  const [status, setStatus] = useState<
+    "idle" | "locating" | "joining" | "error"
+  >("idle");
   const [error, setError] = useState<string>("");
+
+  const busy = status === "locating" || status === "joining";
 
   function enter() {
     if (!("geolocation" in navigator)) {
@@ -17,8 +21,15 @@ export default function EntryGate({
       return;
     }
     setStatus("locating");
+    setError("");
     navigator.geolocation.getCurrentPosition(
-      (pos) => onReady(pos.coords.latitude, pos.coords.longitude),
+      (pos) => {
+        setStatus("joining");
+        void onReady(pos.coords.latitude, pos.coords.longitude).catch(() => {
+          setStatus("error");
+          setError("Couldn't reach Pulse. Check your connection and try again.");
+        });
+      },
       (err) => {
         setStatus("error");
         setError(
@@ -27,37 +38,57 @@ export default function EntryGate({
             : "Couldn't get your location. Please try again.",
         );
       },
-      // High accuracy + maximumAge:0 forces a fresh fix (Wi-Fi/GPS scan)
-      // instead of reusing the browser's cached IP-based location.
       { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 },
     );
   }
 
+  const cta =
+    status === "locating"
+      ? "Finding you…"
+      : status === "joining"
+        ? "Dropping you in…"
+        : "Enter Pulse";
+
   return (
-    <div className="flex min-h-full flex-1 flex-col items-center justify-center gap-8 bg-zinc-950 p-6 text-zinc-100">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold tracking-tight">Pulse</h1>
-        <p className="mt-2 max-w-sm text-zinc-400">
-          A living globe of anonymous strangers. Drop onto the map and connect.
+    <div className="entry-sky relative flex min-h-full flex-1 flex-col items-center justify-center overflow-hidden px-6 py-16 text-fog">
+      <div className="entry-orbit" aria-hidden="true" />
+      <div className="entry-glow" aria-hidden="true" />
+
+      <div className="ui-enter relative z-10 flex max-w-md flex-col items-center text-center">
+        <h1 className="text-5xl font-semibold tracking-tight sm:text-6xl">
+          Pulse
+        </h1>
+        <p className="mt-5 max-w-[16.5rem] text-[1.05rem] font-normal leading-snug text-fog-muted sm:max-w-sm sm:text-lg sm:leading-relaxed">
+          Meet someone new. See where the moment takes you.
+        </p>
+
+        <button
+          type="button"
+          onClick={enter}
+          disabled={busy}
+          className="mt-10 min-w-[12.5rem] rounded-full bg-accent px-8 py-3.5 text-sm font-semibold text-night shadow-[0_0_32px_rgba(94,234,212,0.18)] transition hover:bg-accent-dim hover:shadow-[0_0_40px_rgba(94,234,212,0.28)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-70"
+        >
+          {cta}
+        </button>
+
+        {status === "error" && (
+          <div className="mt-5 flex flex-col items-center gap-3">
+            <p className="max-w-sm text-sm text-danger">{error}</p>
+            <button
+              type="button"
+              onClick={enter}
+              className="rounded-full border border-line px-4 py-1.5 text-xs font-medium text-fog transition hover:border-accent/40 hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        <p className="mt-8 max-w-sm text-center text-xs leading-relaxed text-fog-muted/90">
+          No sign-up. Your dot sits 1–3&nbsp;km from your real location.
+          Closing the tab ends everything.
         </p>
       </div>
-
-      <button
-        onClick={enter}
-        disabled={status === "locating"}
-        className="rounded-full bg-emerald-400 px-8 py-3 font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-60"
-      >
-        {status === "locating" ? "Locating…" : "Enter Pulse"}
-      </button>
-
-      {status === "error" && (
-        <p className="max-w-sm text-center text-sm text-red-400">{error}</p>
-      )}
-
-      <p className="max-w-sm text-center text-xs text-zinc-500">
-        No sign-up. Your dot is placed 1–3&nbsp;km from your real location.
-        Nothing is stored — closing the tab ends everything.
-      </p>
     </div>
   );
 }
