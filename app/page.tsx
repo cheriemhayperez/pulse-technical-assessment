@@ -83,6 +83,10 @@ export default function Home() {
       onRemoteStream: (stream) => setRemoteStream(stream),
       onConnectionState: (state) => {
         if (state === "failed") {
+          const c = connRef.current;
+          if (c.kind === "connecting" || c.kind === "connected") {
+            void sendSignal(sessionId, c.peerId, "end");
+          }
           teardown("Connection failed (network).");
         }
       },

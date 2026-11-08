@@ -18,6 +18,10 @@ const ICE_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
+function isIceCandidateInit(value: unknown): value is RTCIceCandidateInit {
+  return typeof value === "object" && value !== null;
+}
+
 export class PeerSession {
   private pc: RTCPeerConnection;
   private dc: RTCDataChannel | null = null;
@@ -87,9 +91,15 @@ export class PeerSession {
 
   async handleSignal(type: DescType, payload: string) {
     if (this.closed) return;
-    const data = JSON.parse(payload);
+    let data: unknown;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      return;
+    }
 
     if (type === "ice") {
+      if (!isIceCandidateInit(data)) return;
       if (!this.pc.remoteDescription) {
         this.pendingCandidates.push(data);
         return;
@@ -107,10 +117,19 @@ export class PeerSession {
     this.ignoreOffer = !this.polite && offerCollision;
     if (this.ignoreOffer) return;
 
+    // ICE candidates can only be applied after a remote description exists.
+    try {
+      await this.pc.setRemoteDescription(desc);
+    } catch {
+      return;
+    }
     await this.flushPendingCandidates();
-    await this.pc.setRemoteDescription(desc);
     if (desc.type === "offer") {
-      await this.pc.setLocalDescription();
+      try {
+        await this.pc.setLocalDescription();
+      } catch {
+        return;
+      }
       if (this.pc.localDescription) {
         this.cb.onSignal("answer", JSON.stringify(this.pc.localDescription));
       }
@@ -129,7 +148,7 @@ export class PeerSession {
   }
 
   sendChat(text: string) {
-    this.safeSend({ t: "msg", text });
+    this.safeSend({ t: "chat", text });
   }
 
   sendControl(ctrl: PeerControl) {
