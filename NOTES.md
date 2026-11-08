@@ -50,3 +50,28 @@ I fixed an issue where the browser's camera or microphone indicator remained act
 - Prevented cancelled requests from triggering unnecessary errors or additional signaling messages.
 - Stopped remaining sender tracks and cleared video element references during cleanup.
 - Kept the peer connection active when returning to chat, but closed it when leaving the session.
+
+## Phase 3
+
+### Issues found
+
+- Anyone could call poll, signal, or leave with another user’s public id. Poll also returned every peer’s id, so those ids were not secrets.
+- Join let the client pick the id and overwrite an existing session.
+- Signal `fromId` was taken from the request body, so callers could impersonate someone else.
+- Accept/end could set `busy` without a real handshake. Poll/leave/signal did not use the same id checks as join.
+- There was no rate limiting or body-size limit. Raw GPS was sent to join.
+
+### How they were ranked
+
+- Critical: unauthenticated poll/signal/leave, public session ids, spoofed `fromId`.
+- High: join overwrite, easy flooding of presence and signals.
+- Medium: `busy` without a handshake, inconsistent id checks.
+- Low: raw GPS in the join body.
+
+### What was fixed
+
+- Join now creates a public map id and a private session secret. The secret is hashed in the database and never shown to other users.
+- Poll, signal, and leave require that secret. Signal `fromId` always comes from the authenticated session.
+- Join no longer upserts over another session. GPS is offset on the client before join.
+- Request/accept/end only change `busy` for a paired pair. Ids are validated the same way on every route.
+- Basic per-IP rate limits and a 70 KB body cap.

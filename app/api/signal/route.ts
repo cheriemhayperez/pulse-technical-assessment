@@ -1,6 +1,13 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import type { SignalType } from "@/lib/types";
+import {
+  isSessionToken,
+  presenceFromSecret,
+  secretFromRequest,
+} from "@/lib/session";
+import { clientIp, rateLimit, tooManyRequests } from "@/lib/rateLimit";
+import { MAX_BODY_BYTES, bodyTooLarge, payloadTooLarge } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,25 +22,35 @@ const VALID_TYPES: SignalType[] = [
   "end",
 ];
 
-const MAX_PAYLOAD = 64 * 1024; // SDP/ICE are small; cap to be safe.
+const MAX_PAYLOAD = 64 * 1024;
 
-// POST /api/signal — body { fromId, toId, type, payload? }
-// Drops one message into the recipient's mailbox. Also manages the `busy`
-// flag so a user can only be in one connection at a time.
 export async function POST(request: NextRequest) {
+  if (!rateLimit(`signal:${clientIp(request)}`, 120, 60_000)) {
+    return tooManyRequests();
+  }
+  if (bodyTooLarge(request)) return payloadTooLarge();
+
+  const secret = secretFromRequest(request);
+  if (!secret) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const me = await presenceFromSecret(secret);
+  if (!me) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   let body: unknown;
   try {
-    body = await request.json();
+    const text = await request.text();
+    if (text.length > MAX_BODY_BYTES) return payloadTooLarge();
+    body = text ? JSON.parse(text) : {};
   } catch {
     return Response.json({ error: "invalid body" }, { status: 400 });
   }
 
-  const { fromId, toId, type, payload } = (body ?? {}) as Record<
-    string,
-    unknown
-  >;
+  const { toId, type, payload } = (body ?? {}) as Record<string, unknown>;
 
-  if (typeof fromId !== "string" || typeof toId !== "string") {
+  if (!isSessionToken(toId) || toId === me.id) {
     return Response.json({ error: "invalid ids" }, { status: 400 });
   }
   if (typeof type !== "string" || !VALID_TYPES.includes(type as SignalType)) {
@@ -49,38 +66,51 @@ export async function POST(request: NextRequest) {
 
   const signalType = type as SignalType;
   const payloadStr = typeof payload === "string" ? payload : null;
+  const fromId = me.id;
 
-  // Enforce "one active connection at a time": if the target is already busy,
-  // auto-decline the request instead of delivering it.
+  const target = await prisma.presence.findUnique({ where: { id: toId } });
+
   if (signalType === "request") {
-    const target = await prisma.presence.findUnique({
-      where: { id: toId },
-      select: { busy: true },
-    });
     if (!target) {
-      // Target went offline — tell the initiator it was declined.
       await sendDecline(toId, fromId);
       return Response.json({ ok: true, autoDeclined: true });
     }
-    if (target.busy) {
+    if (me.busy || me.pendingWith || target.busy || target.pendingWith) {
       await sendDecline(toId, fromId);
       return Response.json({ ok: true, autoDeclined: true });
     }
-  }
-
-  // Busy transitions:
-  // - accept: the connection is now active → mark BOTH peers busy.
-  // - decline/end: free both peers.
-  if (signalType === "accept") {
+    await prisma.presence.update({
+      where: { id: fromId },
+      data: { pendingWith: toId },
+    });
+    await prisma.presence.update({
+      where: { id: toId },
+      data: { pendingWith: fromId },
+    });
+  } else if (signalType === "accept") {
+    if (!target || !paired(me, target) || me.busy) {
+      return Response.json({ error: "invalid session" }, { status: 409 });
+    }
     await prisma.presence.updateMany({
       where: { id: { in: [fromId, toId] } },
       data: { busy: true },
     });
   } else if (signalType === "decline" || signalType === "end") {
+    if (!target || !paired(me, target)) {
+      return Response.json({ ok: true });
+    }
     await prisma.presence.updateMany({
       where: { id: { in: [fromId, toId] } },
-      data: { busy: false },
+      data: { busy: false, pendingWith: null },
     });
+  } else if (
+    signalType === "offer" ||
+    signalType === "answer" ||
+    signalType === "ice"
+  ) {
+    if (!target || !paired(me, target) || !me.busy || !target.busy) {
+      return Response.json({ error: "invalid session" }, { status: 409 });
+    }
   }
 
   await prisma.signal.create({
@@ -90,9 +120,20 @@ export async function POST(request: NextRequest) {
   return Response.json({ ok: true });
 }
 
-// Helper: deliver an auto-decline from `target` back to `initiator`.
+function paired(
+  a: { id: string; pendingWith: string | null },
+  b: { id: string; pendingWith: string | null },
+): boolean {
+  return a.pendingWith === b.id && b.pendingWith === a.id;
+}
+
 async function sendDecline(targetId: string, initiatorId: string) {
   await prisma.signal.create({
-    data: { fromId: targetId, toId: initiatorId, type: "decline", payload: null },
+    data: {
+      fromId: targetId,
+      toId: initiatorId,
+      type: "decline",
+      payload: null,
+    },
   });
 }
