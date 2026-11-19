@@ -8,7 +8,7 @@ import { intentBadgeText, isIntentId, publicAsk } from "@/lib/intent";
 import { distanceKm, formatDistance } from "@/lib/geo";
 import { peekPlaceName, placeName } from "@/lib/place";
 
-const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "pk.eyJ1IjoicHVsc2UtbWFwIiwiYSI6ImNrMDBkZW1vMDAwMDAwMDAifQ.AAAAAAAAAAAAAAAAAAAAAA";
+const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
 
 function dotColor(id: string): string {
   let hash = 0;
